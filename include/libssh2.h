@@ -258,6 +258,7 @@ typedef struct _LIBSSH2_USERAUTH_KBDINT_RESPONSE
 #define LIBSSH2_CALLBACK_X11                4
 #define LIBSSH2_CALLBACK_SEND               5
 #define LIBSSH2_CALLBACK_RECV               6
+#define LIBSSH2_CALLBACK_AUTH_AGENT         7
 
 /* libssh2_session_method_pref() constants */
 #define LIBSSH2_METHOD_KEX          0
