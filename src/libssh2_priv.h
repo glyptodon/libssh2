@@ -179,6 +179,10 @@ static inline int writev(int sock, struct iovec *iov, int nvecs)
     channel->session->x11(((channel)->session), (channel), \
                           (shost), (sport), (&(channel)->session->abstract))
 
+#define LIBSSH2_AUTH_AGENT_OPEN(channel)          \
+    channel->session->auth_agent(((channel)->session), (channel), \
+                          (&(channel)->session->abstract))
+
 #define LIBSSH2_CHANNEL_CLOSE(session, channel)          \
     channel->close_cb((session), &(session)->abstract, \
                       (channel), &(channel)->abstract)
@@ -217,7 +221,8 @@ typedef enum
     libssh2_NB_state_jump2,
     libssh2_NB_state_jump3,
     libssh2_NB_state_jump4,
-    libssh2_NB_state_jump5
+    libssh2_NB_state_jump5,
+    libssh2_NB_state_jump6
 } libssh2_nonblocking_states;
 
 typedef struct packet_require_state_t
@@ -315,6 +320,18 @@ typedef struct packet_x11_open_state_t
     uint32_t shost_len;
     LIBSSH2_CHANNEL *channel;
 } packet_x11_open_state_t;
+
+#define AgentFwdUnAvil "Agent Forward Unavailable"
+
+typedef struct packet_auth_agent_open_state_t
+{
+    libssh2_nonblocking_states state;
+    unsigned char packet[17 + (sizeof(AgentFwdUnAvil) - 1)];
+    uint32_t sender_channel;
+    uint32_t initial_window_size;
+    uint32_t packet_size;
+    LIBSSH2_CHANNEL *channel;
+} packet_auth_agent_open_state_t;
 
 struct _LIBSSH2_PACKET
 {
@@ -568,6 +585,7 @@ struct _LIBSSH2_SESSION
       LIBSSH2_DISCONNECT_FUNC((*ssh_msg_disconnect));
       LIBSSH2_MACERROR_FUNC((*macerror));
       LIBSSH2_X11_OPEN_FUNC((*x11));
+      LIBSSH2_AUTH_AGENT_OPEN_FUNC((*auth_agent));
       LIBSSH2_SEND_FUNC((*send));
       LIBSSH2_RECV_FUNC((*recv));
 
@@ -768,6 +786,7 @@ struct _LIBSSH2_SESSION
                                           states */
     packet_queue_listener_state_t packAdd_Qlstn_state;
     packet_x11_open_state_t packAdd_x11open_state;
+    packet_auth_agent_open_state_t packAdd_auth_agent_open_state;
 
     /* State variables used in fullpacket() */
     libssh2_nonblocking_states fullpacket_state;

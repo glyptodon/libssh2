@@ -401,6 +401,146 @@ packet_x11_open(LIBSSH2_SESSION * session, unsigned char *data,
 }
 
 /*
+ * packet_auth_agent_open
+ *
+ * Accept a forwarded ssh-agent connection
+ */
+static inline int
+packet_auth_agent_open(LIBSSH2_SESSION * session, unsigned char *data,
+                unsigned long datalen,
+                packet_auth_agent_open_state_t *auth_agent_open_state)
+{
+    int failure_code = SSH_OPEN_CONNECT_FAILED;
+    /* 17 = packet_type(1) + channel(4) + reason(4) + descr(4) + lang(4) */
+    unsigned long packet_len = 17 + (sizeof(AgentFwdUnAvil) - 1);
+    unsigned char *p;
+    LIBSSH2_CHANNEL *channel = auth_agent_open_state->channel;
+    int rc;
+
+    (void) datalen;
+
+    if (auth_agent_open_state->state == libssh2_NB_state_idle) {
+        unsigned char *s = data + (sizeof("auth-agent@openssh.com") - 1) + 5;
+        auth_agent_open_state->sender_channel = _libssh2_ntohu32(s);
+        s += 4;
+        auth_agent_open_state->initial_window_size = _libssh2_ntohu32(s);
+        s += 4;
+        auth_agent_open_state->packet_size = _libssh2_ntohu32(s);
+        s += 4;
+
+        _libssh2_debug(session, LIBSSH2_TRACE_CONN,
+                       "Auth-agent Connection Received on channel %lu",
+                       auth_agent_open_state->sender_channel);
+
+        auth_agent_open_state->state = libssh2_NB_state_allocated;
+    }
+
+    if (session->auth_agent) {
+        if (auth_agent_open_state->state == libssh2_NB_state_allocated) {
+            channel = LIBSSH2_ALLOC(session, sizeof(LIBSSH2_CHANNEL));
+            if (!channel) {
+                _libssh2_error(session, LIBSSH2_ERROR_ALLOC,
+                               "allocate a channel for new connection");
+                failure_code = SSH_OPEN_RESOURCE_SHORTAGE;
+                goto auth_agent_exit;
+            }
+            memset(channel, 0, sizeof(LIBSSH2_CHANNEL));
+
+            channel->session = session;
+            channel->channel_type_len = sizeof("auth-agent@openssh.com") - 1;
+            channel->channel_type = LIBSSH2_ALLOC(session,
+                                                  channel->channel_type_len +
+                                                  1);
+            if (!channel->channel_type) {
+                _libssh2_error(session, LIBSSH2_ERROR_ALLOC,
+                               "allocate a channel for new connection");
+                LIBSSH2_FREE(session, channel);
+                failure_code = SSH_OPEN_RESOURCE_SHORTAGE;
+                goto auth_agent_exit;
+            }
+            memcpy(channel->channel_type, "auth-agent@openssh.com",
+                   channel->channel_type_len + 1);
+
+            channel->remote.id = auth_agent_open_state->sender_channel;
+            channel->remote.window_size_initial =
+                LIBSSH2_CHANNEL_WINDOW_DEFAULT;
+            channel->remote.window_size = LIBSSH2_CHANNEL_WINDOW_DEFAULT;
+            channel->remote.packet_size = LIBSSH2_CHANNEL_PACKET_DEFAULT;
+
+            channel->local.id = _libssh2_channel_nextid(session);
+            channel->local.window_size_initial =
+                auth_agent_open_state->initial_window_size;
+            channel->local.window_size =
+                auth_agent_open_state->initial_window_size;
+            channel->local.packet_size = auth_agent_open_state->packet_size;
+
+            _libssh2_debug(session, LIBSSH2_TRACE_CONN,
+                           "Auth-agent Connection established: channel %lu/%lu "
+                           "win %lu/%lu packet %lu/%lu",
+                           channel->local.id, channel->remote.id,
+                           channel->local.window_size,
+                           channel->remote.window_size,
+                           channel->local.packet_size,
+                           channel->remote.packet_size);
+            p = auth_agent_open_state->packet;
+            *(p++) = SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
+            _libssh2_store_u32(&p, channel->remote.id);
+            _libssh2_store_u32(&p, channel->local.id);
+            _libssh2_store_u32(&p, channel->remote.window_size_initial);
+            _libssh2_store_u32(&p, channel->remote.packet_size);
+
+            auth_agent_open_state->state = libssh2_NB_state_created;
+        }
+
+        if (auth_agent_open_state->state == libssh2_NB_state_created) {
+            rc = _libssh2_transport_send(session, auth_agent_open_state->packet,
+                                         17, NULL, 0);
+            if (rc == LIBSSH2_ERROR_EAGAIN) {
+                return rc;
+            } else if (rc) {
+                auth_agent_open_state->state = libssh2_NB_state_idle;
+                return _libssh2_error(session, LIBSSH2_ERROR_SOCKET_SEND,
+                                      "Unable to send channel open "
+                                      "confirmation");
+            }
+
+            /* Link the channel into the session */
+            _libssh2_list_add(&session->channels, &channel->node);
+
+            /*
+             * Pass control to the callback, they may turn right around and
+             * free the channel, or actually use it
+             */
+            LIBSSH2_AUTH_AGENT_OPEN(channel);
+
+            auth_agent_open_state->state = libssh2_NB_state_idle;
+            return 0;
+        }
+    }
+    else
+        failure_code = SSH_OPEN_RESOURCE_SHORTAGE;
+    /* fall-trough */
+  auth_agent_exit:
+    p = auth_agent_open_state->packet;
+    *(p++) = SSH_MSG_CHANNEL_OPEN_FAILURE;
+    _libssh2_store_u32(&p, auth_agent_open_state->sender_channel);
+    _libssh2_store_u32(&p, failure_code);
+    _libssh2_store_str(&p, AgentFwdUnAvil, sizeof(AgentFwdUnAvil) - 1);
+    _libssh2_htonu32(p, 0);
+
+    rc = _libssh2_transport_send(session, auth_agent_open_state->packet, packet_len,
+                                 NULL, 0);
+    if (rc == LIBSSH2_ERROR_EAGAIN) {
+        return rc;
+    } else if (rc) {
+        auth_agent_open_state->state = libssh2_NB_state_idle;
+        return _libssh2_error(session, rc, "Unable to send open failure");
+    }
+    auth_agent_open_state->state = libssh2_NB_state_idle;
+    return 0;
+}
+
+/*
  * _libssh2_packet_add
  *
  * Create a new packet and attach it to the brigade. Called from the transport
@@ -452,6 +592,8 @@ _libssh2_packet_add(LIBSSH2_SESSION * session, unsigned char *data,
         goto libssh2_packet_add_jump_point4;
     case libssh2_NB_state_jump5:
         goto libssh2_packet_add_jump_point5;
+    case libssh2_NB_state_jump6:
+        goto libssh2_packet_add_jump_point6;
     default: /* nothing to do */
         break;
     }
@@ -896,6 +1038,21 @@ _libssh2_packet_add(LIBSSH2_SESSION * session, unsigned char *data,
                 session->packAdd_state = libssh2_NB_state_jump3;
                 rc = packet_x11_open(session, data, datalen,
                                      &session->packAdd_x11open_state);
+            }
+            else if ((datalen >= (sizeof("auth-agent@openssh.com") + 4)) &&
+                     ((sizeof("auth-agent@openssh.com") - 1) ==
+                          _libssh2_ntohu32(data + 1)) &&
+                     (memcmp(data + 5, "auth-agent@openssh.com",
+                             sizeof("auth-agent@openssh.com") - 1) == 0)) {
+
+                /* init the state struct */
+                memset(&session->packAdd_auth_agent_open_state, 0,
+                       sizeof(session->packAdd_auth_agent_open_state));
+
+              libssh2_packet_add_jump_point6:
+                session->packAdd_state = libssh2_NB_state_jump6;
+                rc = packet_auth_agent_open(session, data, datalen,
+                                     &session->packAdd_auth_agent_open_state);
             }
             if (rc == LIBSSH2_ERROR_EAGAIN)
                 return rc;

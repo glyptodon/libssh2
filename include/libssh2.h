@@ -234,6 +234,10 @@ typedef struct _LIBSSH2_USERAUTH_KBDINT_RESPONSE
  void name(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel, \
            const char *shost, int sport, void **abstract)
 
+#define LIBSSH2_AUTH_AGENT_OPEN_FUNC(name) \
+ void name(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel, \
+           void **abstract)
+
 #define LIBSSH2_CHANNEL_CLOSE_FUNC(name) \
   void name(LIBSSH2_SESSION *session, void **session_abstract, \
             LIBSSH2_CHANNEL *channel, void **channel_abstract)
